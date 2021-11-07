@@ -1,0 +1,112 @@
+#!/bin/sh -e
+# File source for Github.
+#
+# Returns the latest version number for a given github repo by first checking
+# its releases or, if missing, the repo's tags.
+#
+# Arguments: <URL>[@<file name regex>]
+# While technically the file name regex is optional, without one this source
+# will only return the latest version detected.
+#
+# It also requires that KUIOCHAI_GITHUB_TOKEN is set to a proper personal
+# access token. Not even a single request will be accepted from the server
+# without one. The REST endpoint at least allows some but we have to use
+# GraphQL to have sorted tags because apparently it's the only one that
+# supports them? Well, Unlicense time:
+
+# This is free and unencumbered software released into the public domain.
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or
+# distribute this software, either in source code form or as a compiled
+# binary, for any purpose, commercial or non-commercial, and by any
+# means.
+#
+# In jurisdictions that recognize copyright laws, the author or authors
+# of this software dedicate any and all copyright interest in the
+# software to the public domain. We make this dedication for the benefit
+# of the public at large and to the detriment of our heirs and
+# successors. We intend this dedication to be an overt act of
+# relinquishment in perpetuity of all present and future rights to this
+# software under copyright law.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+#
+# For more information, please refer to <http://unlicense.org/>
+
+warn() {
+	printf "!! %s\n" "$1" >&2
+}
+
+
+error() {
+	printf "XX %s\n" "$1" >&2
+	exit "${2:-1}"
+}
+
+
+get_userinfo_http_response() {
+	curl -s -u ":$1" -o /dev/null -w '%{http_code}' https://api.github.com/user
+}
+
+
+IFS='@' read -r file_url file_regex <<eof
+$1
+eof
+
+# We do some simple manipulations to the repo URL to turn it into a Github API
+# repo URL. This makes it less weird to fill in the source field in the file
+# definition as an end user.
+repo_api_url="$(
+	printf "%s\n" "$file_url" |
+	sed "s|://github.com|://api.github.com/repos|"
+)"
+
+token_path="$data_root/github_token"
+
+token="$KUIOCHAI_GITHUB_TOKEN"
+
+if [ "$(get_userinfo_http_response "$token")" = "401" ]
+then
+	warn "Invalid or missing token set in \"KUIOCHAI_GITHUB_TOKEN\"! Github will"
+	warn "deny all GraphQL requests. For more information look at:"
+	warn "https://docs.github.com/en/github/authenticating-to-github/keeping-your-account-and-data-secure/creating-a-personal-access-token"
+	error "Aborting."
+fi
+
+# Certified jq moment.
+latest_release="$(curl -s -u ":$token" "$repo_api_url/releases" |
+	jq -r --arg regex "$file_regex" '
+	if (. | length == 0 | not)
+	then
+		([.[] | select(.prerelease | not)][0] | .tag_name +
+			( if $regex | length > 0
+				then
+				" " +
+				[
+					.assets[]? |
+					select (.name | test($regex))
+				][0].browser_download_url
+				else ""
+				end
+			)
+		)
+	else null
+	end')"
+
+if [ ! "$latest_release" = "null" ]
+then printf "%s\n" "$latest_release"
+else
+	repository_owner="$(printf "%s\n" "$file_url" | awk -F / '{print $4}')"
+	repository_name="$(printf "%s\n" "$file_url" | awk -F / '{print $5}')"
+
+	# I'm not joking, I have _no_ idea on how to wrap this without it returning
+	# an error.
+	curl -s -u :$token -X POST -d '{"query":"query { repository(owner:\"'"$repository_owner"'\", name:\"'"$repository_name"'\") { refs(first: 1, orderBy: {field: TAG_COMMIT_DATE, direction:DESC}, refPrefix: \"refs/tags/\") { edges { node { name } } } } }"}' https://api.github.com/graphql |
+		jq -r '.data.repository.refs.edges[0].node.name'
+fi

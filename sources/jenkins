@@ -1,0 +1,48 @@
+#!/bin/sh
+
+# Jenkin CI file source for kuiochai.
+#
+# Syntax: <URL>[@<regex of the name of the file to download>]
+# Note that although the regex is optional, without it this source won't return
+# a download URL, only the latest version.
+#
+# Non-POSIX dependencies: cURL and jq.
+
+# This is free and unencumbered software released into the public domain.
+#
+# Anyone is free to copy, modify, publish, use, compile, sell, or
+# distribute this software, either in source code form or as a compiled
+# binary, for any purpose, commercial or non-commercial, and by any
+# means.
+#
+# In jurisdictions that recognize copyright laws, the author or authors
+# of this software dedicate any and all copyright interest in the
+# software to the public domain. We make this dedication for the benefit
+# of the public at large and to the detriment of our heirs and
+# successors. We intend this dedication to be an overt act of
+# relinquishment in perpetuity of all present and future rights to this
+# software under copyright law.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+# EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+# MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+# IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+# OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+# ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+# OTHER DEALINGS IN THE SOFTWARE.
+#
+# For more information, please refer to <http://unlicense.org/>
+
+# mfw the license is bigger than the actual script
+
+IFS='@' read -r url file_regex <<eof
+$1
+eof
+
+api_url="$url/lastSuccessfulBuild/api/json"
+
+curl -s "$api_url" |
+	jq -r --arg url "$url/lastSuccessfulBuild/artifact" --arg regex "$file_regex" \
+		'.id + (if $regex | length > 0 then (" " + $url + "/" +
+		([.artifacts[]? | select(.relativePath | test($regex))][0] | .relativePath))
+		else "" end)'
